@@ -14,15 +14,15 @@ namespace ChatClientWinforms
     {
         RegistrationComms rComms;
 
-        public RegisterForm()
+        public RegisterForm(Security SecureComms)
         {
             InitializeComponent();
-            rComms = new RegistrationComms();
+            rComms = new RegistrationComms(SecureComms);
         }
 
         private void RegisterForm_Load(object sender, EventArgs e)
         {
-
+            
         }
 
         private void BtnRegister_Click(object sender, EventArgs e)

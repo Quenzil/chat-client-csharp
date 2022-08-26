@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using System.Security.Cryptography;
 
 namespace ChatClientWinforms
 {
@@ -16,11 +17,13 @@ namespace ChatClientWinforms
         private TcpClient client;
         private StreamReader reader;
         private StreamWriter writer;
+        private RSAParameters RSAParams; 
 
+        public Security secureComms;
 
-        public RegistrationComms()
+        public RegistrationComms(Security SecureComms)
         {
-
+            secureComms = SecureComms;
         }
 
 
@@ -37,7 +40,21 @@ namespace ChatClientWinforms
                 reader = new StreamReader(client.GetStream());
                 writer = new StreamWriter(client.GetStream());
 
-                string s = RegisterAccount(Email, Password, NickName);
+                //First wait for server's public key to be sent, then process key;
+                string serverKey = reader.ReadLine();
+
+                //[0] = key Modulus. [1] = key Exponent;
+                string[] tempArray = serverKey.Split(' ');
+
+                byte[] keyModulus = Array.ConvertAll(tempArray[0].Split(','), Byte.Parse);
+                byte[] keyExponent = Array.ConvertAll(tempArray[1].Split(','), Byte.Parse);
+                RSAParams.Modulus = keyModulus;
+                RSAParams.Exponent = keyExponent;
+
+                //Send the registration info to the server, returning a string value indicating success or failure;
+                string temp = Email + "," + Password + "," + NickName;
+                temp = secureComms.RSAEncrypt(temp, RSAParams);
+                string s = RegisterAccount(temp);
                 return s;
             }
             catch (Exception e)
@@ -48,11 +65,11 @@ namespace ChatClientWinforms
 
         }
 
-        private string RegisterAccount(string Email, string Password, string NickName)
+        private string RegisterAccount(string AccountInfo)
         {
             try
             {
-                writer.WriteLine("{0},{1},{2}", Email, Password, NickName);
+                writer.WriteLine(AccountInfo);
                 writer.Flush();
 
                 string s = reader.ReadLine();

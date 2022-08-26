@@ -64,6 +64,7 @@
       <DependentUpon>RegisterForm.cs</DependentUpon>
     </Compile>
     <Compile Include="RegistrationComms.cs" />
+    <Compile Include="Security.cs" />
     <Compile Include="ServerComms.cs" />
     <EmbeddedResource Include="Form1.resx">
       <DependentUpon>Form1.cs</DependentUpon>

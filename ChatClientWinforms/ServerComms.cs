@@ -17,10 +17,14 @@ namespace ChatClientWinforms
         private StreamReader reader;
         private StreamWriter writer;
 
+        public Security secureChat;
+
         public List<MessageList> convos;
         public List<ListViewItem> messages;
         public List<ListViewItem> onlineList;
         private bool connected;
+        private bool serverKeyRecevied;
+
         public bool Connected
         {
             get { return connected; }
@@ -36,6 +40,8 @@ namespace ChatClientWinforms
             convos.Add(new MessageList("Global"));
             messages = new List<ListViewItem>();
             onlineList = new List<ListViewItem>();
+            secureChat = new Security();
+            serverKeyRecevied = false;
         }
 
         #region //Eventhandler (+delegate) for when Connected value changes.
@@ -99,6 +105,23 @@ namespace ChatClientWinforms
             
         }
 
+        public void AddPublicKeyToContact(string contact, byte[] Modulus, byte[] Exponent)
+        {
+            int i = convos.FindIndex(x => x.name == contact);
+            if(i == -1)
+            {
+                convos.Add(new MessageList(contact, Modulus, Exponent));
+                OnNewConvoStarted(new NewConversationEventArgs(contact));
+            }
+            else
+            {
+                convos[i].pubKeyModulus = Modulus;
+                convos[i].pubKeyExponent = Exponent;
+                convos[i].UpdateRSAParamaters();
+                convos[i].keyObtained = true;
+            }
+        }
+
         public void UpdateOnlineList(string s)
         {
             //Clear onlineList first.
@@ -121,6 +144,8 @@ namespace ChatClientWinforms
 
         public async Task ConnectToServerAsync(string NickName, string Password)
         {
+
+            secureChat.ChangeRSAValue();
 
             await Task.Run(() =>
             {
@@ -147,10 +172,40 @@ namespace ChatClientWinforms
             {
                 Connected = true;
 
-                //Send first message for connection verification;
-                string temp = NickName + "," + Password;
-                SendMessageLogin(temp);
-                AddMessageToList("Global","Connected to server.");
+                //SECURELY Send first message for connection verification, AFTER making sure the server public key is known;             
+                int i = convos.FindIndex(x => x.name == "Global");
+                while(i == -1)
+                {
+                    Thread.Sleep(500);
+                    i = convos.FindIndex(x => x.name == "Global");
+                    System.Diagnostics.Debug.WriteLine("SLEEPING during first security check Sleep.");
+                }
+                int count = 0;
+                while (!convos[i].keyObtained)
+                {
+                    Thread.Sleep(500);
+                    count++;
+                    if(count > 5)
+                    {
+                        break;
+                    }
+                    System.Diagnostics.Debug.WriteLine("SLEEPING during second security check Sleep.");
+                }
+
+                if (convos[i].keyObtained)
+                {
+                    string temp = NickName + " " + Password;
+                    string secureTemp = secureChat.RSAEncrypt(temp, convos[i].RSAParams);
+                    SendMessageLogin(secureTemp);
+                    SendMessageLogin(secureChat.PublicKeyAsString());
+                    AddMessageToList("Global", "Connected to server.");
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("ERROR: COULD NOT LOG IN SECURELY.");
+                    Connected = false;
+                }
+
             }
         }
 
@@ -179,7 +234,7 @@ namespace ChatClientWinforms
             string s = Message;
 
             //Check for manually typed /disconnect, call DisconnectFromServerAsync() if true;
-            if(s == "/disconnect")
+            if(s.StartsWith("/disconnect"))
             {
                 DisconnectFromServerAsync();
                 return;
@@ -191,7 +246,6 @@ namespace ChatClientWinforms
                 {
                     writer.WriteLine(s);
                     writer.Flush();
-                    //AddMessageToList(s);
                 }
                 catch (Exception e)
                 {
@@ -215,7 +269,7 @@ namespace ChatClientWinforms
                 try
                 {
                     string temp = reader.ReadLine();
-                    string s = CheckForServerErrors(temp);
+                    string s = CheckForServerCommunication(temp);
 
                     if(s.StartsWith("/PM "))
                     {
@@ -224,12 +278,9 @@ namespace ChatClientWinforms
                         StringBuilder sb = new StringBuilder();
                         sb.Append(tempArray[1] + ": ");
 
-                        for (int i = 2; i < tempArray.Length; i++)
-                        {
-                            sb.Append(tempArray[i]);
-                            sb.Append(" ");
-                        }
-                        sb.Remove(sb.Length - 1, 1);
+                        string decryptedText = secureChat.RSADecrypt(tempArray[2]);
+
+                        sb.Append(decryptedText);
 
                         AddMessageToList(tempArray[1], sb.ToString());
                         
@@ -249,12 +300,20 @@ namespace ChatClientWinforms
 
                         AddMessageToList(tempArray[1], sb.ToString());
                     }
-                    else
+                    else if(s.StartsWith("/Global"))
                     {
-                        AddMessageToList("Global", s);
+                        string[] tempArray = s.Split(' ');
+
+                        string decryptedText = secureChat.RSADecrypt(tempArray[1]);
+
+                        AddMessageToList("Global", decryptedText);
                     }
 
-
+                    //Temp stuff:
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine(s);
+                    }
 
                 }
                 catch (Exception e)
@@ -266,7 +325,7 @@ namespace ChatClientWinforms
             }
         }
 
-        private string CheckForServerErrors(string s)
+        private string CheckForServerCommunication(string s)
         {
             if(s == "Error001")
             {
@@ -277,6 +336,12 @@ namespace ChatClientWinforms
             {
                 string[] tempArray = s.Split(' ');
 
+                //Set recipient keyObtained to false so a new /requestkey is sent when sending message;
+                int temp = convos.FindIndex(x => x.name == tempArray[1]);
+                if(temp >= 0)
+                {
+                    convos[temp].keyObtained = false;
+                }
                 return "/PMX " + tempArray[1] + " <" + tempArray[1] + " is currently offline.>";
             }
             else if (s == "Shutdown")
@@ -288,6 +353,20 @@ namespace ChatClientWinforms
             {
                 UpdateOnlineList(s);
                 return "Online list updated.";
+            }
+            else if (s.StartsWith("/PublicKey"))
+            {
+                //[0] = "/PublicKey", [1] = key owner, [2] = key modulus string, [3] = key exponent string;
+                string[] tempArray = s.Split(' ');
+
+                string contact = tempArray[1];
+                byte[] keyModulus = Array.ConvertAll(tempArray[2].Split(','), Byte.Parse);
+                byte[] keyExponent = Array.ConvertAll(tempArray[3].Split(','), Byte.Parse);
+
+                AddPublicKeyToContact(contact, keyModulus, keyExponent);
+
+                System.Diagnostics.Debug.WriteLine("/PM " + contact + " Connection secured.");
+                return "Public key updated for " + contact;
             }
             else
             {
